@@ -29,6 +29,16 @@
 | Windows | `Super Paste_x.x.x_x64.msi` |
 | Linux | `.deb` / `.AppImage` |
 
+### macOS 用户
+
+如果提示 **"Super Paste"已损坏，无法打开**，请在终端运行以下命令：
+
+```bash
+xattr -cr /Applications/Super\ Paste.app
+```
+
+这是因为应用未经过 Apple 开发者证书签名。
+
 ## 使用方法
 
 | 操作 | 快捷键 |

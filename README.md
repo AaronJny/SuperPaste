@@ -31,6 +31,16 @@ Download the latest release from [Releases](../../releases).
 | Windows | `Super Paste_x.x.x_x64.msi` |
 | Linux | `.deb` / `.AppImage` |
 
+### macOS Users
+
+If you see **"Super Paste" is damaged and can't be opened**, run this command in Terminal:
+
+```bash
+xattr -cr /Applications/Super\ Paste.app
+```
+
+This is because the app is not signed with an Apple Developer certificate.
+
 ## Usage
 
 | Action | Shortcut |
