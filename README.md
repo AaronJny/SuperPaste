@@ -1,5 +1,7 @@
 # Super Paste
 
+[中文文档](./README.zh-CN.md)
+
 A cross-platform clipboard manager for macOS, Windows and Linux.
 
 Built with **Tauri v2 + React + TypeScript + Rust**.
