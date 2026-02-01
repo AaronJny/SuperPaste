@@ -4,18 +4,43 @@ A cross-platform clipboard manager for macOS, Windows and Linux.
 
 Built with **Tauri v2 + React + TypeScript + Rust**.
 
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 ## Features
 
-- 📋 Clipboard monitoring (text + images, auto-filters >10MB)
-- 🔍 Search and filter history
-- ⌨️ Global hotkey `Cmd/Ctrl+Shift+V` to open panel
-- 💾 SQLite persistent storage
-- 🔄 Content deduplication (SHA256)
-- 🖼️ Image thumbnails
-- ⏰ Auto-cleanup (30 days / 1000 items)
-- ⚙️ Customizable settings
+- 📋 **Clipboard Monitoring** - Automatically captures text and images (filters >10MB)
+- 🔍 **Search & Filter** - Quickly find items in your clipboard history
+- ⌨️ **Global Hotkey** - `Cmd/Ctrl+Shift+V` to open panel from anywhere
+- 💾 **Persistent Storage** - SQLite database keeps your history safe
+- 🔄 **Deduplication** - SHA256 hash prevents duplicate entries
+- 🖼️ **Image Thumbnails** - Visual preview for copied images
+- ⏰ **Auto Cleanup** - Removes items older than 30 days or exceeding 1000 entries
+- ⚙️ **Customizable** - Configure shortcuts and preferences
 
-## Installation
+## Download
+
+Download the latest release from [Releases](../../releases).
+
+| Platform | File |
+|----------|------|
+| macOS (Apple Silicon) | `Super Paste_x.x.x_aarch64.dmg` |
+| macOS (Intel) | `Super Paste_x.x.x_x64.dmg` |
+| Windows | `Super Paste_x.x.x_x64.msi` |
+| Linux | `.deb` / `.AppImage` |
+
+## Usage
+
+| Action | Shortcut |
+|--------|----------|
+| Open/Close panel | `Cmd/Ctrl+Shift+V` |
+| Navigate cards | `←` `→` |
+| Enter card mode | `↓` |
+| Back to search | `↑` |
+| Paste selected | `Enter` |
+| Delete item | `Delete` |
+
+## Build from Source
 
 ### Prerequisites
 
@@ -26,13 +51,13 @@ Built with **Tauri v2 + React + TypeScript + Rust**.
 #### Linux Only
 ```bash
 # Ubuntu/Debian
-sudo apt install xdotool
+sudo apt install xdotool libgtk-3-dev libwebkit2gtk-4.1-dev
 
 # Fedora
-sudo dnf install xdotool
+sudo dnf install xdotool gtk3-devel webkit2gtk4.1-devel
 
 # Arch
-sudo pacman -S xdotool
+sudo pacman -S xdotool gtk3 webkit2gtk-4.1
 ```
 
 ### Build
@@ -47,17 +72,6 @@ npm run tauri dev
 # Production build
 npm run tauri build
 ```
-
-## Usage
-
-| Action | Shortcut |
-|--------|----------|
-| Open/Close panel | `Cmd/Ctrl+Shift+V` |
-| Navigate cards | `←` `→` |
-| Enter card mode | `↓` |
-| Back to search | `↑` |
-| Paste selected | `Enter` |
-| Delete item | `Delete` |
 
 ## Platform Support
 
