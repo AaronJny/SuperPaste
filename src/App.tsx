@@ -19,6 +19,23 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   
   const searchBarRef = useRef<SearchBarRef>(null);
+  const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  // items 变化时，清理多余的 refs
+  useEffect(() => {
+    cardRefs.current.length = items.length;
+  }, [items.length]);
+
+  // 选中卡片变化时，滚动到可视区域
+  useEffect(() => {
+    if (selectedIndex >= 0 && cardRefs.current[selectedIndex]) {
+      cardRefs.current[selectedIndex]?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+        inline: 'center'
+      });
+    }
+  }, [selectedIndex]);
 
   // 判断是否在搜索模式
   const isSearchMode = () => searchBarRef.current?.isFocused() ?? false;
@@ -181,6 +198,7 @@ function App() {
               {items.map((item, index) => (
                 <ClipboardCard
                   key={item.id}
+                  ref={(el) => { cardRefs.current[index] = el; }}
                   item={item}
                   isSelected={index === selectedIndex}
                   onClick={() => handleCardClick(index)}
