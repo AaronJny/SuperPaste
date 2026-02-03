@@ -14,6 +14,8 @@ Built with **Tauri v2 + React + TypeScript + Rust**.
 - 📋 **Clipboard Monitoring** - Automatically captures text and images (filters >10MB)
 - 🔍 **Search & Filter** - Quickly find items in your clipboard history
 - ⌨️ **Global Hotkey** - `Cmd/Ctrl+Shift+V` to open panel from anywhere
+- 🖥️ **Multi-Monitor Support** - Panel appears on the monitor where your cursor is
+- 🎯 **Fullscreen Support** - Works over fullscreen apps on macOS
 - 💾 **Persistent Storage** - SQLite database keeps your history safe
 - 🔄 **Deduplication** - SHA256 hash prevents duplicate entries
 - 🖼️ **Image Thumbnails** - Visual preview for copied images
@@ -49,7 +51,8 @@ This is because the app is not signed with an Apple Developer certificate.
 | Navigate cards | `←` `→` |
 | Enter card mode | `↓` |
 | Back to search | `↑` |
-| Paste selected | `Enter` |
+| Copy & Paste | `Enter` or click |
+| Copy only | `Cmd/Ctrl+C` |
 | Delete item | `Delete` |
 
 ## Build from Source
