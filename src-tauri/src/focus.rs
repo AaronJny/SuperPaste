@@ -11,6 +11,70 @@ use objc::{class, msg_send, sel, sel_impl};
 #[cfg(target_os = "macos")]
 static PREVIOUS_APP_PID: Mutex<Option<i32>> = Mutex::new(None);
 
+/// 屏幕信息
+#[derive(Debug, Clone)]
+pub struct ScreenInfo {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub scale_factor: f64,
+}
+
+/// 获取鼠标所在屏幕的信息 (使用 NSScreen API)
+#[cfg(target_os = "macos")]
+pub fn get_screen_at_mouse() -> Option<ScreenInfo> {
+    unsafe {
+        // 获取鼠标位置
+        let mouse_point: (f64, f64) = msg_send![class!(NSEvent), mouseLocation];
+        let (mouse_x, mouse_y) = mouse_point;
+
+        // 获取所有屏幕
+        let screens: *mut Object = msg_send![class!(NSScreen), screens];
+        if screens.is_null() {
+            return None;
+        }
+
+        let count: usize = msg_send![screens, count];
+
+        for i in 0..count {
+            let screen: *mut Object = msg_send![screens, objectAtIndex: i];
+            if screen.is_null() {
+                continue;
+            }
+
+            // 获取 frame (NSRect: origin.x, origin.y, size.width, size.height)
+            let frame: ((f64, f64), (f64, f64)) = msg_send![screen, frame];
+            let ((origin_x, origin_y), (width, height)) = frame;
+
+            // 获取缩放因子
+            let scale_factor: f64 = msg_send![screen, backingScaleFactor];
+
+            // 检查鼠标是否在此屏幕内
+            if mouse_x >= origin_x
+                && mouse_x < origin_x + width
+                && mouse_y >= origin_y
+                && mouse_y < origin_y + height
+            {
+                return Some(ScreenInfo {
+                    x: origin_x,
+                    y: origin_y,
+                    width,
+                    height,
+                    scale_factor,
+                });
+            }
+        }
+
+        None
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn get_screen_at_mouse() -> Option<ScreenInfo> {
+    None
+}
+
 #[cfg(target_os = "macos")]
 pub fn save_frontmost_app() {
     unsafe {

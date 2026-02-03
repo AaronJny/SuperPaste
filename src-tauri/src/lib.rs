@@ -24,23 +24,39 @@ pub fn run() {
                             } else {
                                 // 先保存当前活跃应用
                                 focus::save_frontmost_app();
-                                
-                                // 根据屏幕尺寸动态设置窗口大小和位置
-                                if let Ok(Some(monitor)) = window.current_monitor() {
-                                    let monitor_size = monitor.size();
-                                    let monitor_pos = monitor.position();
-                                    
+
+                                // 获取当前屏幕信息并设置位置（多显示器支持）
+                                if let Some(screen) = focus::get_screen_at_mouse() {
+                                    let scale = screen.scale_factor;
+
+                                    // NSScreen 返回逻辑像素，Tauri 使用物理像素
+                                    let phys_width = screen.width * scale;
+                                    let phys_height = screen.height * scale;
+                                    let phys_x = screen.x * scale;
+                                    let phys_y = screen.y * scale;
+
                                     // 窗口宽度为屏幕的 92%，高度为屏幕的 45%
-                                    let win_width = (monitor_size.width as f64 * 0.92) as u32;
-                                    let win_height = (monitor_size.height as f64 * 0.45).max(350.0) as u32;
-                                    
+                                    let win_width = (phys_width * 0.92) as u32;
+                                    let win_height = (phys_height * 0.45).max(350.0 * scale) as u32;
+
                                     let _ = window.set_size(tauri::PhysicalSize::new(win_width, win_height));
-                                    
-                                    let x = monitor_pos.x + ((monitor_size.width - win_width) / 2) as i32;
-                                    let y = monitor_pos.y + (monitor_size.height - win_height - 80) as i32;
-                                    
-                                    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+
+                                    // 获取主屏幕物理高度用于 Y 坐标转换
+                                    let primary_phys_height = if let Ok(Some(pm)) = window.primary_monitor() {
+                                        pm.size().height as f64
+                                    } else {
+                                        phys_height
+                                    };
+
+                                    // macOS Y 轴向上，Tauri Y 轴向下
+                                    let screen_top_tauri = primary_phys_height - phys_y - phys_height;
+                                    let x = phys_x + (phys_width - win_width as f64) / 2.0;
+                                    let y = screen_top_tauri + phys_height - win_height as f64 - (80.0 * scale);
+
+                                    let _ = window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
                                 }
+
+                                // 使用 Tauri 标准 API 显示窗口
                                 let _ = window.show();
                                 let _ = window.set_focus();
                             }
