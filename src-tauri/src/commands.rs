@@ -2,6 +2,7 @@ use tauri::Manager;
 use crate::models::Settings;
 use crate::focus;
 use std::fs;
+use std::process::Command;
 
 #[tauri::command]
 pub async fn get_settings() -> Result<Settings, String> {
@@ -88,13 +89,59 @@ pub async fn delete_image_files(
             let _ = fs::remove_file(&path);
         }
     }
-    
+
     // 删除缩略图
     if let Some(path) = thumbnail_path {
         if !path.is_empty() {
             let _ = fs::remove_file(&path);
         }
     }
-    
+
+    Ok(())
+}
+
+/// 模拟粘贴操作 (Cmd+V / Ctrl+V)
+#[tauri::command]
+pub async fn paste() -> Result<(), String> {
+    // 短暂延迟确保焦点已恢复到目标应用
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    #[cfg(target_os = "macos")]
+    {
+        // 使用 AppleScript 模拟 Cmd+V
+        let script = r#"tell application "System Events" to keystroke "v" using command down"#;
+        let output = Command::new("osascript")
+            .args(["-e", script])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Windows: 使用 PowerShell 模拟 Ctrl+V
+        let output = Command::new("powershell")
+            .args(["-Command", r#"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')"#])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Linux: 使用 xdotool 模拟 Ctrl+V (需要安装 xdotool)
+        let output = Command::new("xdotool")
+            .args(["key", "ctrl+v"])
+            .output()
+            .map_err(|e| format!("xdotool not found. Please install it: sudo apt install xdotool. Error: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+    }
+
     Ok(())
 }

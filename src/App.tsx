@@ -94,7 +94,7 @@ function App() {
         case 'Enter':
           if (selectedIndex >= 0 && items[selectedIndex]) {
             e.preventDefault();
-            await handleCopy(items[selectedIndex]);
+            await handleCopyAndPaste(items[selectedIndex]);
           }
           break;
 
@@ -144,16 +144,36 @@ function App() {
   }, []);
 
   const handleCopy = async (item: ClipboardItem) => {
-    const content = item.content_type === 'text' 
-      ? item.text_content! 
+    const content = item.content_type === 'text'
+      ? item.text_content!
       : item.image_path!;
-    
-    await invoke('copy_to_clipboard', { 
-      content, 
-      contentType: item.content_type 
+
+    await invoke('copy_to_clipboard', {
+      content,
+      contentType: item.content_type
     });
     await updateItemTime(item.content_hash);
     await invoke('hide_window');
+  };
+
+  // 复制并粘贴（用于回车键和鼠标点击）
+  const handleCopyAndPaste = async (item: ClipboardItem) => {
+    const content = item.content_type === 'text'
+      ? item.text_content!
+      : item.image_path!;
+
+    await invoke('copy_to_clipboard', {
+      content,
+      contentType: item.content_type
+    });
+    await updateItemTime(item.content_hash);
+    await invoke('hide_window');
+    // 执行粘贴（延迟在 Rust 端处理）
+    try {
+      await invoke('paste');
+    } catch (e) {
+      console.error('Paste failed:', e);
+    }
   };
 
   const handleSearch = useCallback((query: string) => {
@@ -175,7 +195,7 @@ function App() {
 
   const handleCardClick = (index: number) => {
     setSelectedIndex(index);
-    handleCopy(items[index]);
+    handleCopyAndPaste(items[index]);
   };
 
   return (

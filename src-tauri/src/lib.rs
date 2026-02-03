@@ -222,6 +222,7 @@ pub fn run() {
             commands::show_window,
             commands::copy_to_clipboard,
             commands::delete_image_files,
+            commands::paste,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
