@@ -22,3 +22,10 @@ npm-debug.log*
 # Environment
 .env
 .env.local
+
+# Claude/AI working files
+AGENTS.md
+docs/
+findings.md
+progress.md
+task_plan.md
