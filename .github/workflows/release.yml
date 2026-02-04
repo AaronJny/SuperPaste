@@ -31,6 +31,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -59,27 +61,68 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Super Paste ${{ github.ref_name }}'
-          releaseBody: |
-            ## What's New
-            See the changelog for details.
-            
-            ## Downloads
-            - **macOS (Apple Silicon)**: `.dmg` file for M1/M2/M3 Macs
-            - **macOS (Intel)**: `.dmg` file for Intel Macs
-            - **Windows**: `.msi` installer
-            - **Linux**: `.deb` or `.AppImage`
+          releaseBody: 'Building...'
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
 
-  # Merge all platform releases into one
   publish:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Publish Release
-        uses: softprops/action-gh-release@v1
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
+          fetch-depth: 0
+
+      - name: Get previous tag
+        id: prev_tag
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 ${{ github.ref_name }}^ 2>/dev/null || echo "")
+          echo "tag=$PREV_TAG" >> $GITHUB_OUTPUT
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          VERSION="${{ github.ref_name }}"
+          # Try to extract changelog section for this version from CHANGELOG.md
+          if [ -f "CHANGELOG.md" ]; then
+            # Extract content between this version and the next version header
+            CONTENT=$(sed -n "/^## \[*${VERSION}\]*/,/^## \[*v/p" CHANGELOG.md | sed '$d' | tail -n +2)
+            if [ -n "$CONTENT" ]; then
+              echo "$CONTENT" > release_notes.md
+            fi
+          fi
+
+          # If no changelog found, use default template
+          if [ ! -s "release_notes.md" ]; then
+            cat << 'EOF' > release_notes.md
+          ## What's New
+
+          See commit history for details.
+
+          ---
+
+          ## 更新内容
+
+          请查看提交历史了解详情。
+          EOF
+          fi
+
+          # Append full changelog link
+          if [ -n "${{ steps.prev_tag.outputs.tag }}" ]; then
+            echo "" >> release_notes.md
+            echo "---" >> release_notes.md
+            echo "" >> release_notes.md
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.prev_tag.outputs.tag }}...${{ github.ref_name }}" >> release_notes.md
+          fi
+
+      - name: Update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 'Super Paste ${{ github.ref_name }}'
+          body_path: release_notes.md
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
