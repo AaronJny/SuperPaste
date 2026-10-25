@@ -35,7 +35,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24.22.1'
           cache: 'npm'
 
       - name: Setup Rust
@@ -51,6 +51,15 @@ jobs:
 
       - name: Install npm dependencies
         run: npm ci
+
+      - name: Run regression tests
+        run: npm test
+
+      - name: Build frontend for native tests
+        run: npm run build
+
+      - name: Run Rust regression tests
+        run: npm run test:rust -- --target ${{ matrix.target }}
 
       - name: Build Tauri app
         run: npm run tauri build -- --target ${{ matrix.target }}

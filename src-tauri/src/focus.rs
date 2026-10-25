@@ -1,5 +1,73 @@
 use std::sync::Mutex;
 
+pub fn should_hide_on_blur(window_focused: bool, active_window_owned: bool) -> bool {
+    !window_focused && !active_window_owned
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::should_hide_on_blur;
+
+    #[test]
+    fn stale_blur_after_regaining_focus_does_not_hide_panel() {
+        assert!(!should_hide_on_blur(true, false));
+        assert!(!should_hide_on_blur(true, true));
+    }
+
+    #[test]
+    fn owned_popup_is_not_an_external_application_switch() {
+        assert!(!should_hide_on_blur(false, true));
+        assert!(should_hide_on_blur(false, false));
+    }
+}
+
+/// Native GTK combo menus can temporarily take keyboard focus from their
+/// parent without switching the active application. Do not dismiss the panel
+/// for those app-owned windows. xdotool is already the Linux focus dependency.
+#[cfg(target_os = "linux")]
+pub fn own_window_is_active() -> bool {
+    std::process::Command::new("xdotool")
+        .args(["getactivewindow", "getwindowpid"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| active_pid_matches(&output.stdout, std::process::id()))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn active_pid_matches(output: &[u8], own_pid: u32) -> bool {
+    std::str::from_utf8(output)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .is_some_and(|pid| pid != 0 && pid == own_pid)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod blur_tests {
+    use super::active_pid_matches;
+
+    #[test]
+    fn own_active_window_includes_native_popup_but_not_another_application() {
+        assert!(active_pid_matches(b"1234\n", 1234));
+        assert!(!active_pid_matches(b"5678\n", 1234));
+    }
+
+    #[test]
+    fn missing_or_malformed_active_pid_does_not_suppress_blur() {
+        for value in [
+            b"".as_slice(),
+            b"unknown",
+            b"0",
+            b"1234\n5678",
+            b"-1234",
+            b"\xff",
+        ] {
+            assert!(!active_pid_matches(value, 1234));
+        }
+    }
+}
+
 // ============================================================================
 // macOS Implementation
 // ============================================================================
