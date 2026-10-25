@@ -19,9 +19,9 @@ function fixture() {
     async execute(query, values = []) { return sql.prepare(query).run(...values); },
     async select(query, values = []) { return sql.prepare(query).all(...values); },
   };
-  const store = new ClipboardStore(db, async path => {
+  const store = new ClipboardStore(db, async paths => {
     if (failRemoval) throw new Error('File is temporarily busy');
-    removed.push(path);
+    removed.push(...paths);
   });
   return { sql, store, removed, setRemovalFailure(value) { failRemoval = value; } };
 }
@@ -121,5 +121,66 @@ test('receipts keep pending IDs but release confirmed acknowledgments without ho
   assert.equal(sql.prepare('SELECT id FROM clipboard_deliveries').get().id, 'second');
   await store.acknowledge('second');
   assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM clipboard_deliveries').get().n, 0);
+  sql.close();
+});
+
+
+test('historical orphan candidates enter persistent cleanup independently of legacy pairing', async () => {
+  const { sql, store, removed, setRemovalFailure } = fixture(); await store.initialize();
+  await store.save(image('keep', 'referenced'));
+  const original = '/app/images/old-original.png', thumb = '/app/images/different-id_thumb.png';
+  await store.queueOrphanCandidates([original, thumb, '/app/images/referenced.png', '/app/images/referenced_thumb.png']);
+  assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM pending_file_deletions').get().n, 2);
+  setRemovalFailure(true); await assert.rejects(store.flushFileDeletions());
+  assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM pending_file_deletions').get().n, 2);
+  setRemovalFailure(false); await store.flushFileDeletions();
+  assert.deepEqual(removed.sort(), [original, thumb].sort());
+  assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM clipboard_items').get().n, 1);
+  sql.close();
+});
+
+test('reference created after candidate snapshot and before queueing prevents deletion', async () => {
+  const { sql, store, removed } = fixture(); await store.initialize();
+  const paths = ['/app/images/captured.png', '/app/images/captured_thumb.png'];
+  await store.save(image('captured')); // SQLite persistence completed after Rust scan.
+  await store.queueOrphanCandidates(paths);
+  await store.flushFileDeletions();
+  assert.equal(removed.length, 0);
+  assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM pending_file_deletions').get().n, 0);
+  sql.close();
+});
+
+test('final deletion receives all current references for native path-identity checks', async () => {
+  const { sql } = fixture();
+  const calls = [];
+  const db = { async execute(q, v = []) { return sql.prepare(q).run(...v); }, async select(q, v = []) { return sql.prepare(q).all(...v); } };
+  const store = new ClipboardStore(db, async (paths, references) => calls.push({ paths: Array.from(paths), references: Array.from(references) }));
+  await store.initialize(); await store.save(image('keep', 'alias/keep'));
+  await store.queueOrphanCandidates(['/app/images/canonical-keep.png']);
+  await store.flushFileDeletions();
+  assert.deepEqual(calls, [{ paths: ['/app/images/canonical-keep.png'], references: ['/app/images/alias/keep.png', '/app/images/alias/keep_thumb.png'] }]);
+  sql.close();
+});
+
+
+test('large orphan backlog uses bounded batches and one busy path does not block other files', async () => {
+  const { sql } = fixture(); const calls = [], removed = [];
+  let busy = true;
+  const db = { async execute(q, v = []) { return sql.prepare(q).run(...v); }, async select(q, v = []) { return sql.prepare(q).all(...v); } };
+  const store = new ClipboardStore(db, async paths => {
+    calls.push(paths.length);
+    if (busy && paths.includes('/app/images/busy.png')) throw new Error('busy');
+    removed.push(...paths);
+  });
+  await store.initialize();
+  const paths = Array.from({ length: 150 }, (_, i) => `/app/images/${i}.png`);
+  await store.queueOrphanCandidates([...paths, '/app/images/busy.png']);
+  await assert.rejects(store.flushFileDeletions());
+  assert.ok(calls.every(n => n <= 64));
+  assert.ok(calls.includes(64));
+  assert.equal(new Set(removed).size, 150);
+  assert.deepEqual(sql.prepare('SELECT path FROM pending_file_deletions').all(), [{ path: '/app/images/busy.png' }].map(x => Object.assign(Object.create(null), x)));
+  busy = false; await store.flushFileDeletions();
+  assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM pending_file_deletions').get().n, 0);
   sql.close();
 });

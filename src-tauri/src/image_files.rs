@@ -1,17 +1,126 @@
 //! Destructive image operations are confined to the application's flat image directory.
-use std::fs;
+use std::collections::HashSet;
+use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
+
+/// All current instances sharing a profile must acquire this before capture or
+/// cleanup. The OS releases ownership after a crash; never delete the lock file.
+#[derive(Clone)]
+pub struct ImageDirectoryOwner {
+    _file: std::sync::Arc<File>,
+}
+
+impl ImageDirectoryOwner {
+    pub fn acquire(data_dir: &Path) -> Result<Self, String> {
+        fs::create_dir_all(data_dir).map_err(|e| format!("Cannot create app data: {e}"))?;
+        let path = data_dir.join(".image-owner.lock");
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
+                return Err("Image ownership lock must be a regular file".into())
+            }
+            Err(error) if error.kind() != ErrorKind::NotFound => return Err(error.to_string()),
+            _ => {}
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(|e| format!("Cannot open image ownership lock: {e}"))?;
+        file.try_lock().map_err(|e| {
+            format!("Cannot own image storage (another SuperPaste instance may be running): {e}")
+        })?;
+        Ok(Self {
+            _file: std::sync::Arc::new(file),
+        })
+    }
+}
+
+/// Only application-generated flat PNG names are eligible for orphan recovery.
+/// Legacy versions allocated independent UUIDs for original and thumbnail.
+fn is_generated_image_name(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".png") else {
+        return false;
+    };
+    let id = stem.strip_suffix("_thumb").unwrap_or(stem);
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, c)| {
+            if [8, 13, 18, 23].contains(&i) {
+                c == b'-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        })
+}
+
+/// Caller holds the capture mutex throughout enumeration. Files being written
+/// or awaiting SQLite persistence must be supplied in protected_paths.
+pub fn orphan_candidates(
+    images_dir: &Path,
+    protected_paths: &HashSet<PathBuf>,
+) -> Result<Vec<PathBuf>, String> {
+    let metadata = match fs::symlink_metadata(images_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("Cannot inspect image directory: {error}")),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("Image directory must be a real directory, not a symlink".into());
+    }
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(images_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if !entry
+            .file_name()
+            .to_str()
+            .is_some_and(is_generated_image_name)
+            || protected_paths.contains(&path)
+        {
+            continue;
+        }
+        let kind = entry.file_type().map_err(|e| e.to_string())?;
+        if kind.is_file() && !kind.is_symlink() {
+            validate_image_path(images_dir, &path)?;
+            candidates.push(path);
+        }
+    }
+    Ok(candidates)
+}
 
 /// Validate every path before deleting any of them. Missing app-owned files are
 /// already cleaned up, but permission errors and unsafe paths must be reported.
 pub fn delete_owned_images(images_dir: &Path, paths: &[PathBuf]) -> Result<(), String> {
+    delete_unreferenced_images(images_dir, paths, &[])
+}
+
+pub fn delete_unreferenced_images(
+    images_dir: &Path,
+    paths: &[PathBuf],
+    references: &[PathBuf],
+) -> Result<(), String> {
     let validated = paths
         .iter()
         .map(|path| validate_image_path(images_dir, path))
         .collect::<Result<Vec<_>, _>>()?;
-
+    // DB paths from older versions may use different casing, symlink ancestors,
+    // or Windows path prefixes. Compare file identities, not just SQL strings.
+    let mut protected = HashSet::new();
+    for reference in references {
+        match fs::canonicalize(reference) {
+            Ok(path) => {
+                protected.insert(path);
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Cannot verify referenced image: {error}")),
+        }
+    }
     for path in validated.into_iter().flatten() {
+        if protected.contains(&path) {
+            continue;
+        }
         match fs::remove_file(&path) {
             Ok(()) => {}
             Err(error) if error.kind() == ErrorKind::NotFound => {}
@@ -198,5 +307,139 @@ mod tests {
         symlink(dir.images(), &alias).unwrap();
         assert!(delete_owned_images(&alias, &[alias.join("missing.png")]).is_err());
         assert!(outside.exists());
+    }
+    const ID_A: &str = "11111111-1111-4111-8111-111111111111";
+    const ID_B: &str = "22222222-2222-4222-8222-222222222222";
+
+    #[test]
+    fn scanner_recovers_legacy_separate_ids_and_partial_pairs_but_not_unknown_files() {
+        let dir = TestDirectory::new();
+        let original = dir.images().join(format!("{ID_A}.png"));
+        let legacy_thumb = dir.images().join(format!("{ID_B}_thumb.png"));
+        for file in [
+            &original,
+            &legacy_thumb,
+            &dir.images().join("user-photo.png"),
+            &dir.images().join("notes.txt"),
+        ] {
+            fs::write(file, b"data").unwrap();
+        }
+        fs::create_dir(
+            dir.images()
+                .join("33333333-3333-4333-8333-333333333333.png"),
+        )
+        .unwrap();
+        let found = orphan_candidates(&dir.images(), &HashSet::new()).unwrap();
+        assert_eq!(found.len(), 2);
+        assert!(found.contains(&original));
+        assert!(found.contains(&legacy_thumb));
+        let protected = HashSet::from([original.clone()]);
+        assert_eq!(
+            orphan_candidates(&dir.images(), &protected).unwrap(),
+            vec![legacy_thumb]
+        );
+        assert!(original.exists());
+    }
+
+    #[test]
+    fn scanner_only_accepts_exact_generated_names() {
+        for name in [format!("{ID_A}.png"), format!("{ID_A}_thumb.png")] {
+            assert!(is_generated_image_name(&name));
+        }
+        for name in [
+            "photo.png",
+            "../11111111-1111-4111-8111-111111111111.png",
+            "11111111111141118111111111111111.png",
+            "11111111-1111-4111-8111-11111111111z.png",
+            "11111111-1111-4111-8111-111111111111.png.tmp",
+        ] {
+            assert!(!is_generated_image_name(name));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_ignores_symlinks_and_preserves_referenced_alias_identity() {
+        use std::os::unix::fs::symlink;
+        let dir = TestDirectory::new();
+        let original = dir.images().join(format!("{ID_A}.png"));
+        fs::write(&original, b"real").unwrap();
+        let link = dir.images().join(format!("{ID_B}.png"));
+        symlink(&original, &link).unwrap();
+        assert_eq!(
+            orphan_candidates(&dir.images(), &HashSet::new()).unwrap(),
+            vec![original.clone()]
+        );
+        let alias = dir.0.join("alias");
+        symlink(dir.images(), &alias).unwrap();
+        delete_unreferenced_images(
+            &dir.images(),
+            &[original.clone()],
+            &[alias.join(format!("{ID_A}.png"))],
+        )
+        .unwrap();
+        assert!(original.exists());
+        assert!(orphan_candidates(&alias, &HashSet::new()).is_err());
+        assert!(delete_unreferenced_images(&dir.images(), &[link], &[]).is_err());
+    }
+
+    #[test]
+    fn lock_is_exclusive_across_handles_and_released_after_owner_drop() {
+        let dir = TestDirectory::new();
+        let owner = ImageDirectoryOwner::acquire(&dir.0).unwrap();
+        assert!(ImageDirectoryOwner::acquire(&dir.0).is_err());
+        drop(owner);
+        assert!(ImageDirectoryOwner::acquire(&dir.0).is_ok());
+        assert!(dir.0.join(".image-owner.lock").exists());
+    }
+
+    #[test]
+    fn lock_child_probe() {
+        if let Some(path) = std::env::var_os("SUPERPASTE_LOCK_TEST_PATH") {
+            assert!(ImageDirectoryOwner::acquire(Path::new(&path)).is_err());
+        }
+    }
+
+    #[test]
+    fn lock_prevents_second_process_ownership() {
+        let dir = TestDirectory::new();
+        let _owner = ImageDirectoryOwner::acquire(&dir.0).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "image_files::tests::lock_child_probe",
+                "--nocapture",
+            ])
+            .env("SUPERPASTE_LOCK_TEST_PATH", &dir.0)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // The test name is module-qualified in cargo; standalone compilation
+        // uses tests:: below and is exercised separately by the same probe.
+        if String::from_utf8_lossy(&output.stdout).contains("0 tests") {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tests::lock_child_probe", "--nocapture"])
+                .env("SUPERPASTE_LOCK_TEST_PATH", &dir.0)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_rejects_symlink_instead_of_locking_external_file() {
+        use std::os::unix::fs::symlink;
+        let dir = TestDirectory::new();
+        let outside = dir.0.join("outside");
+        fs::write(&outside, b"untouched").unwrap();
+        symlink(&outside, dir.0.join(".image-owner.lock")).unwrap();
+        assert!(ImageDirectoryOwner::acquire(&dir.0).is_err());
+        assert_eq!(fs::read(outside).unwrap(), b"untouched");
     }
 }

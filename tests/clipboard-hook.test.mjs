@@ -18,7 +18,7 @@ const payload = id => ({ id, content_type: 'text', content_hash: id, text_conten
 const settle = async () => { for (let i = 0; i < 50; i++) await new Promise(resolve => setImmediate(resolve)); };
 function fixture({ initialPending = [], ready = true, failAck = false, failLoad = false } = {}) {
   const sql = new DatabaseSync(':memory:');
-  const state = [], effects = [], timers = [], calls = [], events = new Map();
+  const state = [], effects = [], timers = [], intervals = [], calls = [], events = new Map();
   let pending = [...initialPending], loaded = 0;
   const db = {
     async execute(query, values = []) { return sql.prepare(query).run(...values); },
@@ -32,6 +32,7 @@ function fixture({ initialPending = [], ready = true, failAck = false, failLoad 
     calls.push([command, args]);
     if (command === 'pending_clipboard') return [...pending];
     if (command === 'clipboard_status') return null;
+    if (command === 'orphan_image_candidates') return [];
     if (command === 'acknowledge_clipboard') {
       if (failAck) { failAck = false; throw new Error('Transient acknowledgment failure'); }
       assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM clipboard_deliveries WHERE id=?').get(args.id).n, 1, 'durable receipt before ack');
@@ -44,10 +45,10 @@ function fixture({ initialPending = [], ready = true, failAck = false, failLoad 
     react, '@tauri-apps/api/core': { invoke }, '@tauri-apps/api/event': { async listen(name, callback) { events.set(name, callback); return () => events.delete(name); } },
     '@tauri-apps/plugin-sql': { async load() { loaded++; if (failLoad) { failLoad = false; throw new Error('Transient database load failure'); } return db; } },
     '../lib/clipboardStore': storeModule,
-  }, { setTimeout(fn) { timers.push(fn); return fn; }, clearTimeout(fn) { const i = timers.indexOf(fn); if (i >= 0) timers.splice(i, 1); }, setInterval() { return 1; }, clearInterval() {} });
+  }, { setTimeout(fn) { timers.push(fn); return fn; }, clearTimeout(fn) { const i = timers.indexOf(fn); if (i >= 0) timers.splice(i, 1); }, setInterval(fn) { intervals.push(fn); return 1; }, clearInterval() {} });
   const hook = useClipboard(settings, ready);
   const disposers = effects.map(effect => effect());
-  return { hook, state, calls, timers, db, sql, events, get pending() { return pending; }, get loaded() { return loaded; },
+  return { hook, state, calls, timers, intervals, db, sql, events, get pending() { return pending; }, get loaded() { return loaded; },
     capture(item) { pending.push(item); events.get('clipboard-available')?.({ payload: null }); },
     dispose() { disposers.forEach(fn => fn?.()); sql.close(); } };
 }
@@ -92,5 +93,19 @@ test('ack retry after a user deletes the persisted record does not resurrect his
   assert.equal(f.pending.length, 0);
   assert.equal(f.sql.prepare('SELECT COUNT(*) AS n FROM clipboard_items').get().n, 0);
   assert.equal(f.sql.prepare('SELECT COUNT(*) AS n FROM clipboard_deliveries').get().n, 0);
+  f.dispose();
+});
+
+
+test('orphan discovery runs at startup and maintenance, not every capture', async () => {
+  const f = fixture({ initialPending: [payload('first')] }); await settle();
+  assert.equal(f.calls.filter(([name]) => name === 'orphan_image_candidates').length, 1);
+  const savedAt = f.calls.findIndex(([name]) => name === 'acknowledge_clipboard');
+  const scannedAt = f.calls.findIndex(([name]) => name === 'orphan_image_candidates');
+  assert.ok(scannedAt > savedAt);
+  f.capture(payload('next')); await settle();
+  assert.equal(f.calls.filter(([name]) => name === 'orphan_image_candidates').length, 1);
+  f.intervals[0](); await settle();
+  assert.equal(f.calls.filter(([name]) => name === 'orphan_image_candidates').length, 2);
   f.dispose();
 });

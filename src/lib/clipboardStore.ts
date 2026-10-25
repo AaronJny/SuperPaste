@@ -15,12 +15,12 @@ export interface ClipboardDatabase {
   select<T>(query: string, values?: unknown[]): Promise<T>;
 }
 
-type RemoveImage = (path: string) => Promise<void>;
+type RemoveImages = (paths: string[], references: string[]) => Promise<void>;
 
 // This store is called through one serialized queue by useClipboard. The trigger
 // durably records file cleanup in the same SQLite statement that removes a row.
 export class ClipboardStore {
-  constructor(private db: ClipboardDatabase, private removeImage: RemoveImage) {}
+  constructor(private db: ClipboardDatabase, private removeImages: RemoveImages) {}
 
   async initialize() {
     await this.db.execute(`CREATE TABLE IF NOT EXISTS clipboard_items (
@@ -108,18 +108,40 @@ export class ClipboardStore {
       )`, [`-${settings.max_days} days`, settings.max_items]);
   }
 
+  async queueOrphanCandidates(paths: string[]) {
+    // Called in the same serialized queue as save/delete, AFTER Rust has taken
+    // its capture-locked file snapshot. Never pass a pre-scan reference snapshot.
+    for (const path of paths) {
+      await this.db.execute(`INSERT OR IGNORE INTO pending_file_deletions(path)
+        SELECT ? WHERE NOT EXISTS (SELECT 1 FROM clipboard_items
+          WHERE image_path = ? OR thumbnail_path = ?)`, [path, path, path]);
+    }
+  }
+
   async flushFileDeletions() {
     const files = await this.db.select<{ path: string }[]>('SELECT path FROM pending_file_deletions');
+    const rows = await this.db.select<{ image_path: string | null; thumbnail_path: string | null }[]>(
+      'SELECT image_path, thumbnail_path FROM clipboard_items');
+    const references = rows.flatMap(row => [row.image_path, row.thumbnail_path])
+      .filter((path): path is string => Boolean(path));
+    const referenced = new Set(references);
     const failures: string[] = [];
-    for (const { path } of files) {
-      const referenced = await this.db.select<{ id: number }[]>(
-        'SELECT id FROM clipboard_items WHERE image_path = ? OR thumbnail_path = ? LIMIT 1', [path, path]);
-      try {
-        if (referenced.length === 0) await this.removeImage(path);
-        await this.db.execute('DELETE FROM pending_file_deletions WHERE path = ?', [path]);
-      } catch (error) {
-        // Retain the durable queue entry for a later retry, but continue other files.
-        failures.push(String(error));
+    const removeBatch = async (paths: string[]) => {
+      const unreferenced = paths.filter(path => !referenced.has(path));
+      if (unreferenced.length) await this.removeImages(unreferenced, references);
+      await this.db.execute(`DELETE FROM pending_file_deletions WHERE path IN (${paths.map(() => '?').join(',')})`, paths);
+    };
+    // Resolve the reference identities once per small batch rather than once
+    // per orphan. A failed batch falls back to individual retries so one unsafe
+    // or busy file cannot block unrelated cleanup. Queue rows stay durable.
+    for (let offset = 0; offset < files.length; offset += 64) {
+      const paths = files.slice(offset, offset + 64).map(file => file.path);
+      try { await removeBatch(paths); }
+      catch {
+        for (const path of paths) {
+          try { await removeBatch([path]); }
+          catch (error) { failures.push(String(error)); }
+        }
       }
     }
     if (failures.length) throw new Error(`Image cleanup incomplete (${failures.length} files): ${failures[0]}`);

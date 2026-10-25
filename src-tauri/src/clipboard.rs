@@ -2,7 +2,8 @@ use crate::pending_queue::{PendingPayload, PendingQueue};
 use arboard::Clipboard;
 use image::{imageops::FilterType, DynamicImage, ImageBuffer, Rgba};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -64,6 +65,35 @@ impl ClipboardWatcher {
         Ok(())
     }
 
+    /// Capture holds this same mutex from before file creation through queue
+    /// insertion, so the scanner cannot see an unprotected half-written pair.
+    pub fn orphan_candidates(&self, images_dir: &Path) -> Result<Vec<PathBuf>, String> {
+        let pending = self
+            .pending
+            .lock()
+            .map_err(|_| "Clipboard queue is unavailable")?;
+        crate::image_files::orphan_candidates(images_dir, &protected_image_paths(&pending))
+    }
+
+    pub fn delete_images(
+        &self,
+        images_dir: &Path,
+        paths: &[PathBuf],
+        references: &[PathBuf],
+    ) -> Result<(), String> {
+        let pending = self
+            .pending
+            .lock()
+            .map_err(|_| "Clipboard queue is unavailable")?;
+        let protected = protected_image_paths(&pending);
+        if paths.iter().any(|path| protected.contains(path)) {
+            return Err("Image is still awaiting persistence; cleanup will retry".into());
+        }
+        let mut all_references = references.to_vec();
+        all_references.extend(protected);
+        crate::image_files::delete_unreferenced_images(images_dir, paths, &all_references)
+    }
+
     pub fn status(&self) -> Result<Option<String>, String> {
         Ok(self
             .status
@@ -86,7 +116,14 @@ impl ClipboardWatcher {
 
     pub fn start(&self, app: AppHandle) {
         let watcher = self.clone();
+        let owner = app
+            .state::<crate::image_files::ImageDirectoryOwner>()
+            .inner()
+            .clone();
         thread::spawn(move || {
+            // Keep the OS lock for the entire capture-thread lifetime, even if
+            // other application state begins shutting down first.
+            let _owner = owner;
             // A transient clipboard initialization failure should not disable
             // capture for the rest of the application's lifetime.
             let mut clipboard = loop {
@@ -191,6 +228,20 @@ impl ClipboardWatcher {
             }
         });
     }
+}
+
+fn protected_image_paths(pending: &PendingClipboard) -> HashSet<PathBuf> {
+    pending
+        .queue
+        .snapshot()
+        .iter()
+        .flat_map(|item| {
+            [item.image_path.as_deref(), item.thumbnail_path.as_deref()]
+                .into_iter()
+                .flatten()
+                .map(PathBuf::from)
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -307,6 +358,67 @@ mod tests {
         assert!(save_image_pair(&original, &thumbnail, image).is_err());
         assert!(!original.exists());
         assert!(!thumbnail.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn scanner_waits_for_capture_to_publish_pending_paths_and_ack_releases_them() {
+        let dir = std::env::temp_dir().join(format!("superpaste-race-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join(format!("{}.png", Uuid::new_v4()));
+        let thumbnail = dir.join(format!("{}_thumb.png", Uuid::new_v4()));
+        let watcher = ClipboardWatcher::new();
+        let mut capture = watcher.pending.lock().unwrap();
+        std::fs::write(&original, b"in-flight").unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let scanner = watcher.clone();
+        let scan_dir = dir.clone();
+        let thread = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            result_tx
+                .send(scanner.orphan_candidates(&scan_dir))
+                .unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(result_rx.recv_timeout(Duration::from_millis(30)).is_err());
+        std::fs::write(&thumbnail, b"complete").unwrap();
+        let mut image = payload("in-flight");
+        image.content_type = "image".into();
+        image.image_path = Some(original.to_string_lossy().into_owned());
+        image.thumbnail_path = Some(thumbnail.to_string_lossy().into_owned());
+        capture.push(image);
+        drop(capture);
+        assert!(result_rx.recv().unwrap().unwrap().is_empty());
+        thread.join().unwrap();
+        assert!(watcher
+            .delete_images(&dir, &[original.clone()], &[])
+            .is_err());
+        assert!(original.exists());
+        // JS is permitted to acknowledge only after a successful DB save.
+        watcher.acknowledge("in-flight").unwrap();
+        assert_eq!(watcher.orphan_candidates(&dir).unwrap().len(), 2);
+        watcher
+            .delete_images(&dir, &[original.clone()], &[original.clone()])
+            .unwrap();
+        assert!(original.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fresh_process_recovers_files_left_before_pending_or_database_insertion() {
+        let dir = std::env::temp_dir().join(format!("superpaste-crash-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let orphan = dir.join(format!("{}.png", Uuid::new_v4()));
+        std::fs::write(&orphan, b"process-ended-before-enqueue").unwrap();
+        let fresh_watcher = ClipboardWatcher::new();
+        assert_eq!(
+            fresh_watcher.orphan_candidates(&dir).unwrap(),
+            vec![orphan.clone()]
+        );
+        fresh_watcher
+            .delete_images(&dir, &[orphan.clone()], &[])
+            .unwrap();
+        assert!(!orphan.exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

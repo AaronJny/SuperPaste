@@ -37,7 +37,9 @@ export function useClipboard(settings: Settings, settingsReady: boolean) {
     let retry: ReturnType<typeof setTimeout> | undefined;
     let maintenance: ReturnType<typeof setInterval> | undefined;
 
-    const requestDrain = () => {
+    let scanRequested = true;
+    const requestDrain = (scan = false) => {
+      if (scan) scanRequested = true;
       if (cancelled) return;
       void enqueue(async () => {
         if (cancelled || !storeRef.current) return;
@@ -52,6 +54,13 @@ export function useClipboard(settings: Settings, settingsReady: boolean) {
           await store.acknowledge(payload.id);
         }
         await store.cleanup(settingsRef.current);
+        if (scanRequested) {
+          // Scan only at startup/maintenance, not on every clipboard poll.
+          // Keep the request set until both discovery and durable queueing succeed.
+          const candidates = await invoke<string[]>('orphan_image_candidates');
+          await store.queueOrphanCandidates(candidates);
+          scanRequested = false;
+        }
         await refresh(store);
         await store.flushFileDeletions();
         const status = await invoke<string | null>('clipboard_status');
@@ -67,22 +76,22 @@ export function useClipboard(settings: Settings, settingsReady: boolean) {
 
     async function initialize() {
       const database = await Database.load(DB_NAME);
-      const store = new ClipboardStore(database, path => invoke('delete_image_files', {
-        imagePath: path, thumbnailPath: null,
+      const store = new ClipboardStore(database, (paths, references) => invoke('delete_image_files', {
+        paths, referencedPaths: references,
       }));
       await enqueue(() => store.initialize());
       if (cancelled) return;
       storeRef.current = store;
       // Register before requesting the snapshot: captures before registration are
       // buffered in Rust, and captures after it wake another serialized drain.
-      const off = await listen('clipboard-available', requestDrain);
+      const off = await listen('clipboard-available', () => requestDrain());
       if (cancelled) { off(); return; }
       unlisten = off;
       const offStatus = await listen<string | null>('clipboard-status', event => setError(event.payload));
       if (cancelled) { offStatus(); return; }
       unlistenStatus = offStatus;
       requestDrain();
-      maintenance = setInterval(requestDrain, 60_000);
+      maintenance = setInterval(() => requestDrain(true), 60_000);
     }
 
     function startInitialization() {

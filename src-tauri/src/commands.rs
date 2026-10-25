@@ -122,21 +122,38 @@ pub async fn copy_to_clipboard(content: String, content_type: String) -> Result<
 #[tauri::command]
 pub async fn delete_image_files(
     app: tauri::AppHandle,
-    image_path: Option<String>,
-    thumbnail_path: Option<String>,
+    paths: Vec<String>,
+    referenced_paths: Vec<String>,
 ) -> Result<(), String> {
     let images_dir = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?
         .join("images");
-    let paths: Vec<PathBuf> = [image_path, thumbnail_path]
+    let paths = paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+    let references = referenced_paths
         .into_iter()
-        .flatten()
-        .filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .collect();
-    crate::image_files::delete_owned_images(&images_dir, &paths)
+        .collect::<Vec<_>>();
+    app.state::<ClipboardWatcher>()
+        .delete_images(&images_dir, &paths, &references)
+}
+
+#[tauri::command]
+pub async fn orphan_image_candidates(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let images_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("images");
+    app.state::<ClipboardWatcher>()
+        .orphan_candidates(&images_dir)
+        .map(|paths| {
+            paths
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect()
+        })
 }
 
 /// 模拟粘贴操作 (Cmd+V / Ctrl+V)

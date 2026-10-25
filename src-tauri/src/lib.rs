@@ -231,6 +231,11 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
+            // A second current instance must not scan another process's pending
+            // image writes. Retain ownership until all app state is dropped.
+            let owner = image_files::ImageDirectoryOwner::acquire(&app.path().app_data_dir()?)
+                .map_err(std::io::Error::other)?;
+            app.manage(owner);
             // Hide from dock on macOS
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -299,6 +304,7 @@ pub fn run() {
             commands::show_window,
             commands::copy_to_clipboard,
             commands::delete_image_files,
+            commands::orphan_image_candidates,
             commands::paste,
             commands::pending_clipboard,
             commands::acknowledge_clipboard,
