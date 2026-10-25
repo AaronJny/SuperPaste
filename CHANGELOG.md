@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.0.3
+
+### Fixes and improvements
+
+- Settings now preserve your history limits and custom shortcut after restarting.
+- Fixed accidental history deletion or pasting while editing settings, and improved panel focus and shortcut behavior.
+- Image cleanup now removes unused originals and thumbnails, including files left by older versions, while preserving images still in use.
+- Improved clipboard capture during startup and declared the required Linux paste dependency in DEB/RPM packages.
+
+Before upgrading, fully quit the old app. Do not run old and new versions at the same time.
+
+### 修复与改进
+
+- 历史记录保留设置和自定义快捷键在重启后正确恢复。
+- 修复编辑设置时误删记录或误粘贴的问题，并改善面板焦点与快捷键操作。
+- 自动清理不再使用的原图和缩略图，包括旧版本遗留的图片，同时保留仍在使用的图片。
+- 改善启动时的剪贴板捕获，并为 Linux DEB/RPM 安装包声明必需的粘贴依赖。
+
+升级前请完全退出旧版，不要同时运行新旧版本。
+
 ## v1.0.2
 
 ### New Features

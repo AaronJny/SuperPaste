@@ -1,6 +1,6 @@
 {
   "name": "super-paste",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A clipboard manager for macOS",
   "type": "module",
   "scripts": {
