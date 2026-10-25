@@ -7,245 +7,199 @@ import { useSettings } from './hooks/useSettings';
 import ClipboardCard from './components/ClipboardCard';
 import SearchBar, { SearchBarRef } from './components/SearchBar';
 import SettingsPanel from './components/SettingsPanel';
+import { getPanelKeyAction, isInteractiveTarget } from './utils/keyboard';
 import type { ClipboardItem } from './types';
 
 function App() {
-  const { items, updateItemTime, searchItems, deleteItem } = useClipboard();
-  const { settings, updateShortcut, updateSettings } = useSettings();
-  
-  // 核心状态：-1 表示搜索模式，>=0 表示选中的卡片索引
-  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const { settings, loading, historyReady, error: settingsError, updateSettings } = useSettings();
+  const { items, updateItemTime, searchItems, deleteItem, error: clipboardError } = useClipboard(settings, historyReady);
+  // Keep selection attached to an item, not an index that changes after a refresh.
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSettings, setShowSettings] = useState(false);
-  
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const actionPending = useRef(false);
+  const selectedIndex = items.findIndex(item => item.id === selectedId);
   const searchBarRef = useRef<SearchBarRef>(null);
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const searchItemsRef = useRef(searchItems);
+  searchItemsRef.current = searchItems;
 
-  // items 变化时，清理多余的 refs
-  useEffect(() => {
-    cardRefs.current.length = items.length;
-  }, [items.length]);
-
-  // 选中卡片变化时，滚动到可视区域
-  useEffect(() => {
-    if (selectedIndex >= 0 && cardRefs.current[selectedIndex]) {
-      cardRefs.current[selectedIndex]?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'nearest',
-        inline: 'center'
-      });
-    }
-  }, [selectedIndex]);
-
-  // 判断是否在搜索模式
-  const isSearchMode = () => searchBarRef.current?.isFocused() ?? false;
-
-  // 进入卡片模式
-  const enterCardMode = useCallback(() => {
-    if (items.length > 0) {
-      searchBarRef.current?.blur();
-      setSelectedIndex(0);
-    }
-  }, [items.length]);
-
-  // 返回搜索模式
   const enterSearchMode = useCallback(() => {
-    setSelectedIndex(-1);
+    setSelectedId(null);
     searchBarRef.current?.focus();
   }, []);
 
-  // 全局键盘事件处理
   useEffect(() => {
-    const handleKeyDown = async (e: KeyboardEvent) => {
-      // Esc 始终关闭面板
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        await invoke('hide_window');
-        return;
-      }
-
-      // 搜索框聚焦时，只处理 ArrowDown
-      if (isSearchMode()) {
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          enterCardMode();
-        }
-        // 其他键（包括 Backspace/Delete）让 input 自然处理
-        return;
-      }
-
-      // 卡片模式下的键盘操作
-      switch (e.key) {
-        case 'ArrowUp':
-          e.preventDefault();
-          enterSearchMode();
-          break;
-          
-        case 'ArrowLeft':
-          e.preventDefault();
-          setSelectedIndex(prev => Math.max(0, prev - 1));
-          break;
-          
-        case 'ArrowRight':
-          e.preventDefault();
-          setSelectedIndex(prev => Math.min(items.length - 1, prev + 1));
-          break;
-          
-        case 'Enter':
-          if (selectedIndex >= 0 && items[selectedIndex]) {
-            e.preventDefault();
-            await handleCopyAndPaste(items[selectedIndex]);
-          }
-          break;
-
-        case 'c':
-          if (e.metaKey && selectedIndex >= 0 && items[selectedIndex]) {
-            e.preventDefault();
-            await handleCopy(items[selectedIndex]);
-          }
-          break;
-          
-        case 'Backspace':
-        case 'Delete':
-          if (selectedIndex >= 0 && items[selectedIndex]) {
-            e.preventDefault();
-            await handleDelete(items[selectedIndex]);
-          }
-          break;
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [items, selectedIndex, enterCardMode, enterSearchMode]);
-
-  // 面板显示时重置状态
-  useEffect(() => {
-    const unlisten = listen('panel-show', () => {
-      setSearchQuery('');
-      setSelectedIndex(-1);
-      // 等待窗口渲染完成后聚焦
-      requestAnimationFrame(() => {
-        searchBarRef.current?.focus();
-      });
-    });
-    return () => { unlisten.then(fn => fn()); };
-  }, []);
-
-  // 窗口失焦时隐藏
-  useEffect(() => {
-    const currentWindow = getCurrentWindow();
-    const unlisten = currentWindow.onFocusChanged(({ payload: focused }) => {
-      if (!focused) {
-        invoke('hide_window');
-      }
-    });
-    return () => { unlisten.then(fn => fn()); };
-  }, []);
-
-  const handleCopy = async (item: ClipboardItem) => {
-    const content = item.content_type === 'text'
-      ? item.text_content!
-      : item.image_path!;
-
-    await invoke('copy_to_clipboard', {
-      content,
-      contentType: item.content_type
-    });
-    await updateItemTime(item.content_hash);
-    await invoke('hide_window');
-  };
-
-  // 复制并粘贴（用于回车键和鼠标点击）
-  const handleCopyAndPaste = async (item: ClipboardItem) => {
-    const content = item.content_type === 'text'
-      ? item.text_content!
-      : item.image_path!;
-
-    await invoke('copy_to_clipboard', {
-      content,
-      contentType: item.content_type
-    });
-    await updateItemTime(item.content_hash);
-    await invoke('hide_window');
-    // 执行粘贴（延迟在 Rust 端处理）
-    try {
-      await invoke('paste');
-    } catch (e) {
-      console.error('Paste failed:', e);
+    cardRefs.current.length = items.length;
+    if (selectedId !== null && selectedIndex < 0 && !busy) {
+      setSelectedId(null);
+      if (!showSettings) searchBarRef.current?.focus();
     }
-  };
+  }, [items.length, selectedId, selectedIndex, showSettings, busy]);
+
+  useEffect(() => {
+    if (selectedIndex >= 0) {
+      cardRefs.current[selectedIndex]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    }
+  }, [selectedIndex]);
+
+  const runAction = useCallback(async (operation: () => Promise<void>) => {
+    if (actionPending.current) return;
+    actionPending.current = true;
+    setBusy(true);
+    setActionError(null);
+    try {
+      await operation();
+    } catch (cause) {
+      setActionError(String(cause));
+    } finally {
+      actionPending.current = false;
+      setBusy(false);
+    }
+  }, []);
+
+  const copyItem = useCallback((item: ClipboardItem, paste: boolean) => runAction(async () => {
+    const content = item.content_type === 'text' ? item.text_content : item.image_path;
+    if (content === null || content === undefined) throw new Error('此记录缺少可复制的内容');
+    await invoke('copy_to_clipboard', { content, contentType: item.content_type });
+    // A metadata failure must not turn a successful clipboard write into a silent failure.
+    try {
+      await updateItemTime(item.content_hash);
+    } catch (cause) {
+      throw new Error(`内容已复制，但更新历史记录失败；尚未自动粘贴：${String(cause)}`);
+    }
+    if (paste) {
+      // Hide restores the target application's focus; the backend delays the paste.
+      await invoke('hide_window');
+      try {
+        await invoke('paste');
+      } catch (cause) {
+        throw new Error(`内容已复制，但自动粘贴失败，可手动粘贴：${String(cause)}`);
+      }
+    } else {
+      await invoke('hide_window');
+    }
+  }), [runAction, updateItemTime]);
+
+  const handleDelete = useCallback((item: ClipboardItem) => runAction(async () => {
+    const index = items.findIndex(candidate => candidate.id === item.id);
+    const nextId = items[index + 1]?.id ?? items[index - 1]?.id ?? null;
+    await deleteItem(item);
+    // Do not move a newer selection made while deletion was in flight.
+    setSelectedId(current => current === item.id ? nextId : current);
+    if (nextId === null) searchBarRef.current?.focus();
+  }), [deleteItem, items, runAction]);
 
   const handleSearch = useCallback((query: string) => {
     setSearchQuery(query);
-    searchItems(query);
+    setSelectedId(null);
+    void searchItems(query).catch(cause => setActionError(`搜索失败：${String(cause)}`));
   }, [searchItems]);
 
-  const handleDelete = async (item: ClipboardItem) => {
-    const newLength = items.length - 1;
-    await deleteItem(item);
-    
-    // 调整选中索引
-    if (newLength === 0) {
-      enterSearchMode();
-    } else if (selectedIndex >= newLength) {
-      setSelectedIndex(newLength - 1);
-    }
-  };
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const action = getPanelKeyAction(event, {
+        settingsOpen: showSettings,
+        searchFocused: searchBarRef.current?.isFocused() ?? false,
+        interactiveTarget: isInteractiveTarget(event.target),
+        hasSelection: selectedIndex >= 0,
+        hasItems: items.length > 0,
+      });
+      if (!action) return;
+      event.preventDefault();
+      switch (action) {
+        case 'close-settings': setShowSettings(false); break;
+        case 'hide-window': void runAction(() => invoke('hide_window')); break;
+        case 'enter-search': enterSearchMode(); break;
+        case 'enter-cards':
+          searchBarRef.current?.blur();
+          setSelectedId(items[0].id);
+          break;
+        case 'previous': setSelectedId(items[Math.max(0, selectedIndex - 1)].id); break;
+        case 'next': setSelectedId(items[Math.min(items.length - 1, selectedIndex + 1)].id); break;
+        case 'copy': void copyItem(items[selectedIndex], false); break;
+        case 'paste': void copyItem(items[selectedIndex], true); break;
+        case 'delete': void handleDelete(items[selectedIndex]); break;
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [items, selectedIndex, showSettings, runAction, enterSearchMode, copyItem, handleDelete]);
 
-  const handleCardClick = (index: number) => {
-    setSelectedIndex(index);
-    handleCopyAndPaste(items[index]);
-  };
+  useEffect(() => {
+    let disposed = false;
+    let frame: number | undefined;
+    const unlisten = listen('panel-show', () => {
+      setSearchQuery('');
+      setSelectedId(null);
+      setShowSettings(false);
+      // Reset the hook's filter too, not just the text displayed in the search box.
+      void searchItemsRef.current('').catch(cause => setActionError(`加载记录失败：${String(cause)}`));
+      frame = requestAnimationFrame(() => { if (!disposed) searchBarRef.current?.focus(); });
+    });
+    void unlisten.catch(cause => { if (!disposed) setActionError(`无法监听窗口显示事件：${String(cause)}`); });
+    return () => {
+      disposed = true;
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      void unlisten.then(stop => stop(), () => undefined);
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused) {
+        // Never steal focus back from the application the user just switched to.
+        void invoke('hide_window', { restoreFocus: false }).catch(cause => {
+          if (!disposed) setActionError(`隐藏窗口失败：${String(cause)}`);
+        });
+      }
+    });
+    void unlisten.catch(cause => { if (!disposed) setActionError(`无法监听窗口焦点：${String(cause)}`); });
+    return () => { disposed = true; void unlisten.then(stop => stop(), () => undefined); };
+  }, []);
 
   return (
-    <div className="app-container">
-      <div className="panel">
-        <SearchBar 
-          ref={searchBarRef}
-          value={searchQuery} 
-          onChange={handleSearch}
-        />
-        
+    <div className="app-container" aria-busy={busy || loading}>
+      <div className="panel" aria-hidden={showSettings || undefined}>
+        <SearchBar ref={searchBarRef} value={searchQuery} onChange={handleSearch} />
+        {(settingsError || clipboardError || actionError) && (
+          <div className="settings-message error" role="alert">
+            {[settingsError, clipboardError, actionError].filter(Boolean).join('。')}
+            {actionError && <button onClick={() => setActionError(null)} aria-label="关闭操作错误">✕</button>}
+          </div>
+        )}
         <div className="cards-container">
           {items.length === 0 ? (
             <div className="empty-state">
-              <p>暂无剪贴板记录</p>
-              <p className="hint">复制一些内容后会显示在这里</p>
+              <p>{loading ? '正在加载设置…' : searchQuery ? '没有匹配的记录' : '暂无剪贴板记录'}</p>
+              <p className="hint">{searchQuery ? '试试其他关键词，或清空搜索' : '复制一些内容后会显示在这里'}</p>
             </div>
           ) : (
             <div className="cards-scroll">
               {items.map((item, index) => (
-                <ClipboardCard
-                  key={item.id}
-                  ref={(el) => { cardRefs.current[index] = el; }}
-                  item={item}
-                  isSelected={index === selectedIndex}
-                  onClick={() => handleCardClick(index)}
-                />
+                <ClipboardCard key={item.id} ref={element => { cardRefs.current[index] = element; }} item={item} isSelected={index === selectedIndex} onClick={() => {
+                  if (actionPending.current || showSettings) return;
+                  setSelectedId(item.id);
+                  void copyItem(item, true);
+                }} />
               ))}
             </div>
           )}
         </div>
-
         <div className="footer">
           <span className="hint">↓ 选择卡片</span>
           <span className="hint">← → 切换</span>
-          <span className="hint">Enter 复制</span>
+          <span className="hint">Enter 复制并粘贴</span>
+          <span className="hint">Cmd/Ctrl+C 复制</span>
           <span className="hint">Delete 删除</span>
           <span className="hint">Esc 关闭</span>
-          <button className="settings-btn" onClick={() => setShowSettings(true)}>⚙️</button>
+          <button className="settings-btn" aria-label="打开设置" disabled={loading || busy} onClick={() => setShowSettings(true)}>⚙️</button>
         </div>
       </div>
-
-      {showSettings && (
-        <SettingsPanel
-          settings={settings}
-          onUpdateShortcut={updateShortcut}
-          onUpdateSettings={updateSettings}
-          onClose={() => setShowSettings(false)}
-        />
-      )}
+      {showSettings && <SettingsPanel settings={settings} error={settingsError} onUpdateSettings={updateSettings} onClose={() => setShowSettings(false)} />}
     </div>
   );
 }

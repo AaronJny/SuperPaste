@@ -1,8 +1,8 @@
-use tauri::Manager;
+use crate::clipboard::{ClipboardPayload, ClipboardWatcher};
 use crate::models::Settings;
-use crate::focus;
-use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
+use tauri::Manager;
 
 #[tauri::command]
 pub async fn get_settings() -> Result<Settings, String> {
@@ -16,30 +16,58 @@ pub async fn save_settings(settings: Settings) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn hide_window(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("main") {
-        window.hide().map_err(|e| e.to_string())?;
-        // 恢复之前应用的焦点
-        focus::restore_previous_app();
-    }
-    Ok(())
+pub async fn hide_window(app: tauri::AppHandle, restore_focus: Option<bool>) -> Result<(), String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = sender.send(crate::hide_panel(&handle, restore_focus.unwrap_or(true)));
+    })
+    .map_err(|error| error.to_string())?;
+    receiver
+        .await
+        .map_err(|_| "Panel action was interrupted".to_string())?
 }
 
 #[tauri::command]
 pub async fn show_window(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("main") {
-        position_window_bottom(&app);
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = sender.send(crate::show_panel(&handle));
+    })
+    .map_err(|error| error.to_string())?;
+    receiver
+        .await
+        .map_err(|_| "Panel action was interrupted".to_string())?
+}
+
+#[tauri::command]
+pub async fn pending_clipboard(
+    watcher: tauri::State<'_, ClipboardWatcher>,
+) -> Result<Vec<ClipboardPayload>, String> {
+    watcher.pending()
+}
+
+#[tauri::command]
+pub async fn acknowledge_clipboard(
+    watcher: tauri::State<'_, ClipboardWatcher>,
+    id: String,
+) -> Result<(), String> {
+    watcher.acknowledge(&id)
+}
+
+#[tauri::command]
+pub async fn clipboard_status(
+    watcher: tauri::State<'_, ClipboardWatcher>,
+) -> Result<Option<String>, String> {
+    watcher.status()
 }
 
 #[tauri::command]
 pub async fn copy_to_clipboard(content: String, content_type: String) -> Result<(), String> {
     use arboard::Clipboard;
     let mut clipboard = Clipboard::new().map_err(|e| e.to_string())?;
-    
+
     match content_type.as_str() {
         "text" => {
             clipboard.set_text(&content).map_err(|e| e.to_string())?;
@@ -58,46 +86,28 @@ pub async fn copy_to_clipboard(content: String, content_type: String) -> Result<
         }
         _ => return Err("Unsupported content type".to_string()),
     }
-    
-    Ok(())
-}
 
-fn position_window_bottom(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        if let Ok(Some(monitor)) = window.current_monitor() {
-            let monitor_size = monitor.size();
-            let monitor_pos = monitor.position();
-            
-            if let Ok(window_size) = window.outer_size() {
-                let x = monitor_pos.x + ((monitor_size.width - window_size.width) / 2) as i32;
-                let y = monitor_pos.y + (monitor_size.height - window_size.height - 100) as i32;
-                
-                let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
-            }
-        }
-    }
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn delete_image_files(
+    app: tauri::AppHandle,
     image_path: Option<String>,
     thumbnail_path: Option<String>,
 ) -> Result<(), String> {
-    // 删除原图
-    if let Some(path) = image_path {
-        if !path.is_empty() {
-            let _ = fs::remove_file(&path);
-        }
-    }
-
-    // 删除缩略图
-    if let Some(path) = thumbnail_path {
-        if !path.is_empty() {
-            let _ = fs::remove_file(&path);
-        }
-    }
-
-    Ok(())
+    let images_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("images");
+    let paths: Vec<PathBuf> = [image_path, thumbnail_path]
+        .into_iter()
+        .flatten()
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    crate::image_files::delete_owned_images(&images_dir, &paths)
 }
 
 /// 模拟粘贴操作 (Cmd+V / Ctrl+V)
@@ -137,7 +147,12 @@ pub async fn paste() -> Result<(), String> {
         let output = Command::new("xdotool")
             .args(["key", "ctrl+v"])
             .output()
-            .map_err(|e| format!("xdotool not found. Please install it: sudo apt install xdotool. Error: {}", e))?;
+            .map_err(|e| {
+                format!(
+                    "xdotool not found. Please install it: sudo apt install xdotool. Error: {}",
+                    e
+                )
+            })?;
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).to_string());
         }

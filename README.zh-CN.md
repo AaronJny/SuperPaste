@@ -31,6 +31,10 @@
 | Windows | `Super Paste_x.x.x_x64.msi` |
 | Linux | `.deb` / `.AppImage` |
 
+### Linux AppImage 用户
+
+请通过包管理器安装 `xdotool`，用于 X11 下的焦点恢复和自动粘贴。Debian/RPM 安装包已声明此依赖；Wayland 限制仍然存在。
+
 ### macOS 用户
 
 如果提示 **"Super Paste"已损坏，无法打开**，请在终端运行以下命令：
@@ -57,7 +61,7 @@ xattr -cr /Applications/Super\ Paste.app
 
 ### 前置条件
 
-- [Node.js](https://nodejs.org/) (v18+)
+- [Node.js](https://nodejs.org/) (v24.22.1 LTS，见 `.nvmrc`)
 - [Rust](https://rustup.rs/)
 - [Tauri CLI](https://tauri.app/start/prerequisites/)
 

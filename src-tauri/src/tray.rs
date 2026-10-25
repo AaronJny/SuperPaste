@@ -1,7 +1,6 @@
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Emitter, Manager,
 };
 
 pub fn create_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -17,10 +16,8 @@ pub fn create_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .tooltip("Super Paste - 剪贴板管理器")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                    let _ = app.emit("panel-show", ());
+                if let Err(error) = crate::show_panel(app) {
+                    eprintln!("Cannot show clipboard panel: {error}");
                 }
             }
             "quit" => app.exit(0),
@@ -29,14 +26,13 @@ pub fn create_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .on_tray_icon_event(|tray, event| {
             if let tauri::tray::TrayIconEvent::Click {
                 button: tauri::tray::MouseButton::Left,
+                button_state: tauri::tray::MouseButtonState::Up,
                 ..
             } = event
             {
                 let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                    let _ = app.emit("panel-show", ());
+                if let Err(error) = crate::show_panel(app) {
+                    eprintln!("Cannot show clipboard panel: {error}");
                 }
             }
         })

@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Settings } from '../types';
+import { SETTINGS_LIMITS, validateSettings } from '../utils/settings';
 
 interface Props {
   settings: Settings;
-  onUpdateShortcut: (shortcut: string) => Promise<boolean>;
+  error?: string | null;
   onUpdateSettings: (updates: Partial<Settings>) => Promise<boolean>;
   onClose: () => void;
 }
@@ -16,106 +17,119 @@ const SHORTCUT_OPTIONS = [
   'CommandOrControl+Shift+P',
 ];
 
-function SettingsPanel({ settings, onUpdateShortcut, onUpdateSettings, onClose }: Props) {
+function SettingsPanel({ settings, error, onUpdateSettings, onClose }: Props) {
   const [shortcut, setShortcut] = useState(settings.shortcut);
-  const [maxItems, setMaxItems] = useState(settings.max_items);
-  const [maxDays, setMaxDays] = useState(settings.max_days);
+  const [maxItems, setMaxItems] = useState(String(settings.max_items));
+  const [maxDays, setMaxDays] = useState(String(settings.max_days));
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState<{ text: string; success: boolean } | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const savingRef = useRef(false);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    panelRef.current?.querySelector<HTMLElement>('select')?.focus();
+    return () => {
+      mountedRef.current = false;
+      previousFocus?.focus();
+    };
+  }, []);
 
   const handleSave = async () => {
+    if (savingRef.current) return;
+    const next: Settings = {
+      shortcut,
+      max_items: Number(maxItems),
+      max_days: Number(maxDays),
+      max_file_size_mb: settings.max_file_size_mb,
+    };
+    const validationError = validateSettings(next);
+    if (validationError) {
+      setMessage({ text: validationError, success: false });
+      return;
+    }
+    savingRef.current = true;
     setSaving(true);
-    setMessage('');
-
+    setMessage(null);
     try {
-      if (shortcut !== settings.shortcut) {
-        const success = await onUpdateShortcut(shortcut);
-        if (!success) {
-          setMessage('快捷键设置失败，请尝试其他组合');
-          setSaving(false);
-          return;
-        }
+      // All fields, including the shortcut, are saved by a single atomic operation.
+      const success = await onUpdateSettings(next);
+      if (mountedRef.current) {
+        setMessage({ text: success ? '设置已保存' : '保存失败，请检查错误后重试', success });
       }
-
-      await onUpdateSettings({
-        max_items: maxItems,
-        max_days: maxDays,
-      });
-
-      setMessage('设置已保存');
-      setTimeout(() => onClose(), 1000);
-    } catch (e) {
-      setMessage('保存失败');
+    } catch (cause) {
+      if (mountedRef.current) setMessage({ text: `保存失败：${String(cause)}`, success: false });
     } finally {
-      setSaving(false);
+      savingRef.current = false;
+      if (mountedRef.current) setSaving(false);
     }
   };
 
-  const formatShortcut = (s: string) => {
-    return s
-      .replace('CommandOrControl', '⌘')
-      .replace('Shift', '⇧')
-      .replace('Alt', '⌥')
-      .replace(/\+/g, ' + ');
-  };
+  const close = () => { if (!savingRef.current) onClose(); };
+  const edit = (update: () => void) => { setMessage(null); update(); };
+  const formatShortcut = (value: string) => value.replace('CommandOrControl', 'Cmd/Ctrl').replace(/\+/g, ' + ');
+  const shortcutOptions = SHORTCUT_OPTIONS.includes(shortcut) ? SHORTCUT_OPTIONS : [shortcut, ...SHORTCUT_OPTIONS];
 
   return (
-    <div className="settings-overlay" onClick={onClose}>
-      <div className="settings-panel" onClick={e => e.stopPropagation()}>
+    <div className="settings-overlay" onClick={close}>
+      <div
+        className="settings-panel"
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        aria-busy={saving}
+        onClick={event => event.stopPropagation()}
+        onKeyDown={event => {
+          // The modal owns every key; none may reach clipboard-card actions.
+          event.stopPropagation();
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            close();
+          } else if (event.key === 'Tab') {
+            const controls = Array.from(panelRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]') ?? []);
+            const first = controls[0];
+            const last = controls[controls.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault();
+              last?.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first?.focus();
+            }
+          }
+        }}
+      >
         <div className="settings-header">
-          <h2>设置</h2>
-          <button className="close-btn" onClick={onClose}>✕</button>
+          <h2 id="settings-title">设置</h2>
+          <button className="close-btn" aria-label="关闭设置" disabled={saving} onClick={close}>✕</button>
         </div>
 
         <div className="settings-content">
           <div className="setting-item">
-            <label>唤起快捷键</label>
-            <select 
-              value={shortcut} 
-              onChange={e => setShortcut(e.target.value)}
-            >
-              {SHORTCUT_OPTIONS.map(opt => (
-                <option key={opt} value={opt}>
-                  {formatShortcut(opt)}
-                </option>
-              ))}
+            <label htmlFor="shortcut">唤起快捷键</label>
+            <select id="shortcut" value={shortcut} disabled={saving} onChange={event => edit(() => setShortcut(event.target.value))}>
+              {shortcutOptions.map(option => <option key={option} value={option}>{formatShortcut(option)}</option>)}
             </select>
           </div>
-
           <div className="setting-item">
-            <label>最大保存条数</label>
-            <input
-              type="number"
-              min={100}
-              max={5000}
-              value={maxItems}
-              onChange={e => setMaxItems(parseInt(e.target.value) || 1000)}
-            />
+            <label htmlFor="max-items">最大保存条数</label>
+            <input id="max-items" type="number" min={SETTINGS_LIMITS.max_items.min} max={SETTINGS_LIMITS.max_items.max} step={1} required disabled={saving} value={maxItems} onChange={event => edit(() => setMaxItems(event.target.value))} />
           </div>
-
           <div className="setting-item">
-            <label>保存天数</label>
-            <input
-              type="number"
-              min={1}
-              max={365}
-              value={maxDays}
-              onChange={e => setMaxDays(parseInt(e.target.value) || 30)}
-            />
+            <label htmlFor="max-days">保存天数</label>
+            <input id="max-days" type="number" min={SETTINGS_LIMITS.max_days.min} max={SETTINGS_LIMITS.max_days.max} step={1} required disabled={saving} value={maxDays} onChange={event => edit(() => setMaxDays(event.target.value))} />
           </div>
         </div>
 
-        {message && (
-          <div className={`settings-message ${message.includes('失败') ? 'error' : 'success'}`}>
-            {message}
-          </div>
-        )}
+        {error && <div className="settings-message error" role="alert">{error}</div>}
+        {message && <div className={`settings-message ${message.success ? 'success' : 'error'}`} role={message.success ? 'status' : 'alert'}>{message.text}</div>}
 
         <div className="settings-footer">
-          <button className="btn-secondary" onClick={onClose}>取消</button>
-          <button className="btn-primary" onClick={handleSave} disabled={saving}>
-            {saving ? '保存中...' : '保存'}
-          </button>
+          <button className="btn-secondary" disabled={saving} onClick={close}>关闭</button>
+          <button className="btn-primary" disabled={saving} onClick={handleSave}>{saving ? '保存中...' : '保存'}</button>
         </div>
       </div>
     </div>

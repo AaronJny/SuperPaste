@@ -33,6 +33,10 @@ Download the latest release from [Releases](../../releases).
 | Windows | `Super Paste_x.x.x_x64.msi` |
 | Linux | `.deb` / `.AppImage` |
 
+### Linux AppImage Users
+
+Install `xdotool` with your package manager for X11 focus restoration and automatic paste. Debian/RPM packages declare this dependency. Wayland limitations still apply.
+
 ### macOS Users
 
 If you see **"Super Paste" is damaged and can't be opened**, run this command in Terminal:
@@ -59,7 +63,7 @@ This is because the app is not signed with an Apple Developer certificate.
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (v18+)
+- [Node.js](https://nodejs.org/) (v24.22.1 LTS; see `.nvmrc`)
 - [Rust](https://rustup.rs/)
 - [Tauri CLI](https://tauri.app/start/prerequisites/)
 
