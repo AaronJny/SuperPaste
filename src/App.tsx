@@ -17,6 +17,7 @@ function App() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSettings, setShowSettings] = useState(false);
+  const [panelShowVersion, setPanelShowVersion] = useState(0);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const actionPending = useRef(false);
@@ -130,29 +131,35 @@ function App() {
 
   useEffect(() => {
     let disposed = false;
-    let frame: number | undefined;
     const unlisten = listen('panel-show', () => {
       setSearchQuery('');
       setSelectedId(null);
       setShowSettings(false);
+      setPanelShowVersion(version => version + 1);
       // Reset the hook's filter too, not just the text displayed in the search box.
       void searchItemsRef.current('').catch(cause => setActionError(`加载记录失败：${String(cause)}`));
-      frame = requestAnimationFrame(() => { if (!disposed) searchBarRef.current?.focus(); });
     });
     void unlisten.catch(cause => { if (!disposed) setActionError(`无法监听窗口显示事件：${String(cause)}`); });
     return () => {
       disposed = true;
-      if (frame !== undefined) cancelAnimationFrame(frame);
       void unlisten.then(stop => stop(), () => undefined);
     };
   }, []);
 
   useEffect(() => {
+    // Focus after React commits the reopen and runs SettingsPanel's unmount
+    // cleanup. Focusing in the native event/animation frame can run first and
+    // then be overwritten when the dialog restores its previous button focus.
+    if (panelShowVersion > 0) searchBarRef.current?.focus();
+  }, [panelShowVersion]);
+
+  useEffect(() => {
     let disposed = false;
     const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
       if (!focused) {
-        // Never steal focus back from the application the user just switched to.
-        void invoke('hide_window', { restoreFocus: false }).catch(cause => {
+        // Native popup focus is not an application switch. The backend checks
+        // the current owner before dismissing, without restoring stale focus.
+        void invoke('hide_window_on_blur').catch(cause => {
           if (!disposed) setActionError(`隐藏窗口失败：${String(cause)}`);
         });
       }

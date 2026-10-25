@@ -318,6 +318,20 @@ test('App resets search results on reopen, isolates modal keys, and supports Ctr
     await flush();
     assert.equal(deleted, 0);
     assert.equal(invokes.length, 0);
+    // Reopening while settings is still mounted must wait for its teardown.
+    // A frame callback dispatched from the native event used to focus search
+    // too early; the dialog cleanup then restored the settings button.
+    focused = false;
+    events.get('panel-show')();
+    assert.equal(focused, false, 'native event must not focus before React commits');
+    focused = false; // SettingsPanel unmount restores its previous button.
+    tree = harness.render(App);
+    assert.equal(find(tree, element => element.type === 'SettingsPanel'), undefined);
+    assert.equal(focused, true, 'reopen effect must win after dialog cleanup');
+    handlers.get('keydown')({ ...keyEvent('ArrowDown'), preventDefault() {}, target: null });
+    tree = harness.render(App);
+    find(tree, element => element.props?.className === 'settings-btn').props.onClick();
+    tree = harness.render(App);
     handlers.get('keydown')({ ...keyEvent('Escape'), preventDefault() {}, target: null });
     tree = harness.render(App);
     assert.equal(find(tree, element => element.type === 'SettingsPanel'), undefined);
@@ -326,9 +340,13 @@ test('App resets search results on reopen, isolates modal keys, and supports Ctr
     await flush();
     assert.deepEqual(invokes.map(([command]) => command), ['copy_to_clipboard', 'hide_window']);
     assert.equal(copiedTimes, 1);
+    const beforeFocus = invokes.length;
+    focusHandler({ payload: true });
+    await flush();
+    assert.equal(invokes.length, beforeFocus);
     focusHandler({ payload: false });
     await flush();
-    assert.deepEqual(invokes.at(-1), ['hide_window', { restoreFocus: false }]);
+    assert.deepEqual(invokes.at(-1), ['hide_window_on_blur', undefined]);
     harness.cleanup();
   } finally { Object.assign(globalThis, previous); }
 });

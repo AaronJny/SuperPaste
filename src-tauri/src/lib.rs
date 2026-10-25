@@ -295,6 +295,7 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::hide_window,
+            commands::hide_window_on_blur,
             commands::show_window,
             commands::copy_to_clipboard,
             commands::delete_image_files,

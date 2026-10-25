@@ -29,6 +29,35 @@ pub async fn hide_window(app: tauri::AppHandle, restore_focus: Option<bool>) -> 
 }
 
 #[tauri::command]
+pub async fn hide_window_on_blur(app: tauri::AppHandle) -> Result<(), String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        // Recheck at execution time: a queued blur must not hide a panel that
+        // has already regained focus (for example after a quick reopen).
+        let focused = handle
+            .get_webview_window("main")
+            .and_then(|window| window.is_focused().ok())
+            .unwrap_or(false);
+        #[cfg(target_os = "linux")]
+        let active_window_owned = crate::focus::own_window_is_active();
+        #[cfg(not(target_os = "linux"))]
+        let active_window_owned = false;
+        let result = if crate::focus::should_hide_on_blur(focused, active_window_owned) {
+            // An external application now owns focus. Never steal it back.
+            crate::hide_panel(&handle, false)
+        } else {
+            Ok(())
+        };
+        let _ = sender.send(result);
+    })
+    .map_err(|error| error.to_string())?;
+    receiver
+        .await
+        .map_err(|_| "Panel action was interrupted".to_string())?
+}
+
+#[tauri::command]
 pub async fn show_window(app: tauri::AppHandle) -> Result<(), String> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let handle = app.clone();
