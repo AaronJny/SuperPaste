@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-const read = path => fs.readFileSync(new URL(path, import.meta.url), 'utf8');
+const read = path => fs.readFileSync(new URL(path, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 test('Linux installers declare xdotool and AppImage instructions identify the runtime prerequisite', () => {
   const config = JSON.parse(read('../src-tauri/tauri.conf.json'));
